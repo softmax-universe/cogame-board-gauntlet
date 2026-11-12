@@ -156,12 +156,21 @@ when isMainModule:
       response = %*{"response": $action}
     of "step":
       doAssert not game.done and request["decision_id"].getInt() == id
-      var action = parseJson(request["response"].getStr())
+      var action: JsonNode
       if languageMode:
-        let parsed = game.parseReply(action)
-        game.applyMove(parsed.move, parsed.say, parsed.notes, true, false)
-        action = %*{"move": parsed.move, "say": parsed.say, "notes": parsed.notes}
+        try:
+          action = extractJsonObject(request["response"].getStr())
+          let parsed = game.parseReply(action)
+          game.applyMove(parsed.move, parsed.say, parsed.notes, true, false)
+          action = %*{"move": parsed.move, "say": parsed.say, "notes": parsed.notes}
+        except CatchableError as error:
+          response = %*{"kind": "rejected", "reason": error.msg,
+            "observation": game.decision(id, selection, languageMode)}
+          stdout.writeLine($response)
+          stdout.flushFile()
+          continue
       else:
+        action = parseJson(request["response"].getStr())
         game.applyMove(action["move"].getStr(), "", "", true, false)
       inc id
       var observation: JsonNode
