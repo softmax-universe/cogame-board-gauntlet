@@ -85,12 +85,29 @@ for board, seed in CASES:
                 action = json.loads(request(process, {"kind": "teacher"})["response"])
                 assert action["move"] in view["legal_moves"]
                 action["notes"] = f"PRIVATE-{seat}"
+                if choice == "canonical" and len(transcript) == 0:
+                    for invalid in ("not JSON", "{}", '{"move":"__illegal__"}'):
+                        rejected = request(
+                            process,
+                            {
+                                "kind": "step",
+                                "decision_id": observation["decision_id"],
+                                "response": invalid,
+                            },
+                        )
+                        assert rejected["kind"] == "rejected" and rejected["reason"]
+                        assert rejected["observation"]["decision_id"] == observation["decision_id"]
+                formatted = (
+                    f"```json\n{json.dumps(action)}\n```"
+                    if len(transcript) % 2 == 0
+                    else json.dumps(action)
+                )
                 result = request(
                     process,
                     {
                         "kind": "step",
                         "decision_id": observation["decision_id"],
-                        "response": json.dumps(action),
+                        "response": formatted,
                     },
                 )
                 assert result["kind"] == "accepted" and result["action"] == action
