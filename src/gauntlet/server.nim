@@ -288,8 +288,12 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
     let playDeadline =
       if timeoutSeconds > 0.0: gameStart + timeoutSeconds * PlayBudgetFraction
       else: 0.0
+    let sidecarEndpoint = getEnv("COWORLD_LLM_ENDPOINT").strip()
+    let localSidecar = sidecarEndpoint.startsWith("http://127.0.0.1") or
+      sidecarEndpoint.startsWith("http://localhost")
     let plySpacing =
-      if config.plySpacingSeconds > 0: config.plySpacingSeconds
+      if localSidecar: 0
+      elif config.plySpacingSeconds > 0: config.plySpacingSeconds
       else: DerivedPlySpacingSeconds
     ## The pathological case is latency, not length: one ply can cost the
     ## spacing floor, then the call plus one retry, then apply/broadcast,
