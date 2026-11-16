@@ -2,6 +2,7 @@
 #
 # Goes to:  .github/workflows/coworld-release.yml  in the coworld repo.
 # Substitute: board-gauntlet  (lowercase game slug; also the Coworld name and the
+#                      e.g. bullwhip)
 #             coworld-board-gauntlet (local image name WITHOUT a tag, must match compose.yaml
 #                      minus ":latest", e.g. coworld-bullwhip)
 #
@@ -12,12 +13,11 @@
 # not "upload-coworld prunes the image" -- no prune/rmi exists anywhere in the
 # CLI; only the ordering is established, so treat it as empirical.)
 #
-# Repo secrets required: SOFTMAX_TOKEN (set by coworld-builder's propagate-secrets.yml).
+# Repo secret required: SOFTMAX_TOKEN.
 #
 # The agent reads the outcome back with:
 #   gh run download <run_id> -R softmax-universe/cogame-board-gauntlet -n release-result \
 #     -D /tmp/rr && jq . /tmp/rr/release-result.json
-# Hosted inference uses the platform LLM sidecar without provider secrets.
 name: Coworld release
 
 on:
@@ -57,12 +57,11 @@ env:
   #   older clients race the expansion and the manifest POST fails HTTP 400
   #   "Coworld replay viewer bundle must be uploaded first"
   #   (seen: cogame-lighthouse release run 32603113899, 2026-08-22).
-  # - 0.1.42's --wait-hosted-smoke GETs the flat /v2/episode-requests route,
-  #   which the deployed backend now 405s (allow: POST only); the release dies
-  #   at "Upload the Coworld" with HTTP 405 and canonical stays null. 0.1.43
-  #   lists the nested /v2/coworlds/<cow_id>/episode-requests route instead;
-  #   cli.py is byte-identical between the two, so every grepped marker holds
-  #   (seen: cogame-walker-waterworld release run 32962660196, 2026-08-26).
+  # - the hosted-smoke status poll uses the rooted
+  #   /v2/coworlds/{id}/episode-requests route from 0.1.43 on; the broad
+  #   /v2/episode-requests GET that 0.1.42 calls was removed from the
+  #   backend on 2026-08-26 and now answers HTTP 405
+  #   (seen: cogame-chorus release run 32998942462).
   # 0.1.34 unconditionally prints "Replay liveness: verified ...", so the
   # certify gate can never pass on it. Do not pin lower.
   COWORLD_PKG: "coworld[auth]==0.1.56"
@@ -247,6 +246,8 @@ jobs:
                   for token in argv:
                       cmd += ["--run", token]
                   for key, value in (row.get("env") or {}).items():
+                      if key == "USE_BEDROCK":
+                          continue
                       cmd += ["--secret-env", f"{key}={value}"]
                   # The command is NOT echoed: --secret-env values are policy secrets.
                   print(f"::group::upload-policy {name} ({image}) as {player or 'the token owner'}",
