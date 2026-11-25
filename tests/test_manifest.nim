@@ -168,7 +168,8 @@ suite "upload contract":
       check player["resources"]["limits"]["cpu"].getStr() == "1"
       check player["resources"]["requests"]["cpu"].getStr() == "100m"
       check player["resources"]["requests"]["memory"].getStr() == "64Mi"
-    check not manifest["player"][0].hasKey("env")
+    check manifest["player"][0]["env"]["PLAYER_SCRIPTED"].getStr() ==
+      "hustler"
     check manifest["player"][1]["env"]["PLAYER_SCRIPTED"].getStr() ==
       "tactician"
 

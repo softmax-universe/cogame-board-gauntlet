@@ -86,7 +86,13 @@ for board, seed in CASES:
                 assert action["move"] in view["legal_moves"]
                 action["notes"] = f"PRIVATE-{seat}"
                 if choice == "canonical" and len(transcript) == 0:
-                    for invalid in ("not JSON", "{}", '{"move":"__illegal__"}'):
+                    for invalid in (
+                        "not JSON",
+                        "{}",
+                        '{"move":"__illegal__"}',
+                        f'{{"move":"{action["move"].upper()}"}}',
+                        f'I play {json.dumps(action)}',
+                    ):
                         rejected = request(
                             process,
                             {

@@ -178,21 +178,6 @@ proc readout*(sim: Sim, seat: int): string =
     "PATH " & $sim.pathLen(seat) & " \u00B7 WALLS " & $sim.wallsLeft[seat]
   of gRotate: ""
 
-proc normalizeMove*(sim: Sim, raw: string): string =
-  ## The tolerant reader. Returns "" when the string does not name a move
-  ## of THIS game — a legal-looking move of a different game included.
-  let capped = cleanText(raw, MaxMoveLen)
-  var cleaned = newStringOfCap(capped.len)
-  for ch in capped.toLowerAscii():
-    if ch in {'a' .. 'z', '0' .. '9'}:
-      cleaned.add(ch)
-  case sim.config.game
-  of gConnectFour: connect_four.normalizeMove(sim, cleaned, capped)
-  of gBreakthrough: breakthrough.normalizeMove(sim, cleaned, capped)
-  of gHex: hex.normalizeMove(sim, cleaned)
-  of gQuoridor: quoridor.normalizeMove(sim, cleaned)
-  of gRotate: ""
-
 # ---- Scoring and settling ---------------------------------------------------
 
 proc score*(sim: Sim, seat: int): float =

@@ -163,17 +163,16 @@ proc cellName*(config: GameConfig, cell: int): string =
 proc cellName*(sim: Sim, cell: int): string = cellName(sim.config, cell)
 
 proc cellIndex*(config: GameConfig, name: string): int =
-  ## The inverse of `cellName`. Raises on anything that is not a cell of
-  ## this board.
-  let text = name.strip().toLowerAscii()
-  if text.len < 2:
+  ## The inverse of `cellName`. Raises on anything that is not a canonical cell
+  ## name of this board (exact lowercase, no whitespace or leading zeros).
+  if name.len < 2 or name[0] notin 'a' .. 'z' or name[1] notin '1' .. '9':
     raise newException(GauntletError, "not a cell name: " & name)
-  let col = ord(text[0]) - ord('a')
+  let col = ord(name[0]) - ord('a')
   var rank = 0
-  for index in 1 ..< text.len:
-    if text[index] notin '0' .. '9':
+  for index in 1 ..< name.len:
+    if name[index] notin '0' .. '9':
       raise newException(GauntletError, "not a cell name: " & name)
-    rank = rank * 10 + (ord(text[index]) - ord('0'))
+    rank = rank * 10 + (ord(name[index]) - ord('0'))
   let row = rank - 1
   if col < 0 or col >= boardCols(config) or row < 0 or row >= boardRows(config):
     raise newException(GauntletError, "cell off the board: " & name)

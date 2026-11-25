@@ -56,6 +56,7 @@ type
     decisionId: int
     pendingSeat: int
     pendingMove: string
+    pendingRejected: string
     playerSockets: Table[int, WebSocket]
     socketSlots: Table[WebSocket, int]
     globalSockets: HashSet[WebSocket]
@@ -248,6 +249,59 @@ proc finishEpisode(runtimeConfig: RuntimeConfig) =
   echo "board-gauntlet: episode complete, shutting down"
   quit(0)
 
+proc failEpisode(runtimeConfig: RuntimeConfig, seat: int, reason: string) =
+  ## Propagates an unscored execution failure to the host without writing
+  ## results.json or awarding points to any player, while preserving actual
+  ## trajectory evidence and writing COGAME_PLAYER_FAILURE_URI if configured.
+  var failurePayload: JsonNode
+  withLock stateLock:
+    if state.finished:
+      return
+    state.finished = true
+    let policyName =
+      if seat >= 0 and seat < state.config.players.len:
+        state.config.players[seat].name
+      else:
+        ""
+    failurePayload = %*{
+      "status": "failed",
+      "scored": false,
+      "seat": seat,
+      "policy": policyName,
+      "reason": reason,
+      "game": $state.config.game,
+      "plies": state.sim.plies
+    }
+    if state.trajectory.isSome:
+      state.trajectory.get().finish(esFailed, failurePayload, %*{})
+      state.trajectory.get().writeEventsToUri(getEnv(CogameSaveTrajectoryUriEnv))
+    var errFrame = %*{
+      "type": "error",
+      "failed": true,
+      "scored": false,
+      "seat": seat,
+      "reason": reason
+    }
+    for slot, socket in state.playerSockets:
+      errFrame["slot"] = %slot
+      try:
+        socket.send($errFrame)
+      except CatchableError:
+        discard
+  sleep(200)
+  let failureUri = getEnv("COGAME_PLAYER_FAILURE_URI").strip()
+  if failureUri.len > 0:
+    try:
+      writeArtifact(
+        failureUri, $failurePayload, "application/json",
+        "COGAME_PLAYER_FAILURE_METHOD"
+      )
+    except CatchableError as error:
+      echo "board-gauntlet: failed to write COGAME_PLAYER_FAILURE_URI: ",
+        error.msg
+  echo "board-gauntlet: episode failed unscored (seat ", seat, "): ", reason
+  quit(1)
+
 proc moveText(sim: Sim, seat: int, move: string): string =
   sim.names[seat] & " plays " & move
 
@@ -257,14 +311,24 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
     let gameStart = epochTime()
     let connectDeadline = gameStart + config.playerConnectTimeoutSeconds
 
+    var allConnected = false
     while epochTime() < connectDeadline:
-      var allConnected = false
       withLock stateLock:
         allConnected = state.playerSockets.len >= config.tokens.len and
           state.registered[0] and state.registered[1]
       if allConnected:
         break
       sleep(200)
+
+    if not allConnected:
+      var missingSeat = 0
+      withLock stateLock:
+        for slot in 0 ..< config.tokens.len:
+          if not state.playerSockets.hasKey(slot) or not state.registered[slot]:
+            missingSeat = slot
+            break
+      failEpisode(runtimeConfig, missingSeat,
+        "player connect/register timeout")
 
     withLock stateLock:
       state.started = true
@@ -316,6 +380,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       var seatBaseline: string
       var mover = -1
       var external = false
+      var disconnected = false
       withLock stateLock:
         if state.sim.done:
           break
@@ -331,13 +396,23 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
         simCopy = state.sim
         seatPrompt = state.prompts[mover]
         seatBaseline = state.baselines[mover]
-        external = state.external[mover] and state.playerSockets.hasKey(mover)
+        external = state.external[mover]
+        disconnected = not state.playerSockets.hasKey(mover)
+        if disconnected and state.trajectory.isSome:
+          state.trajectory.get().recordAppliedDecision(simCopy,
+            Decision(move: ""), Decision(move: ""), seatPrompt,
+            (if external: "external-gauntlet" else: "scripted-" & seatBaseline),
+            false, state.selection)
+
+      if disconnected:
+        failEpisode(runtimeConfig, mover, "player disconnected")
 
       if external:
         withLock stateLock:
           inc state.decisionId
           state.pendingSeat = mover
           state.pendingMove = ""
+          state.pendingRejected = ""
           state.playerSockets[mover].send($ %*{
             "type": "observation",
             "id": state.decisionId,
@@ -350,26 +425,44 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
           })
         let replyDeadline = epochTime() + config.llmTimeoutSeconds.float
         var move = ""
+        var rejectedMove = ""
+        var lostConnection = false
         while epochTime() < replyDeadline:
           withLock stateLock:
             move = state.pendingMove
-          if move.len > 0:
+            rejectedMove = state.pendingRejected
+            lostConnection = not state.playerSockets.hasKey(mover)
+          if move.len > 0 or rejectedMove.len > 0 or lostConnection:
             break
           sleep(50)
+        var failedReason = ""
         withLock stateLock:
           state.pendingSeat = -1
           state.pendingMove = ""
+          state.pendingRejected = ""
           let proposed = Decision(move: move)
-          let applied = if move.len > 0: proposed
-            else: Decision(move: tacticianMove(state.sim), fellBack: true)
-          state.sim.applyMove(applied.move, "", "", false, applied.fellBack)
-          if state.trajectory.isSome:
-            state.trajectory.get().recordAppliedDecision(simCopy, proposed,
-              applied, seatPrompt, "external-gauntlet", state.sim.done, state.selection)
-          echo "board-gauntlet: ply ", state.sim.plies, "/", config.maxPlies,
-            " ", moveText(state.sim, mover, state.sim.lastMove), " at ",
-            (epochTime() - gameStart).int, "s"
-          state.broadcastLocked()
+          if move.len > 0:
+            state.sim.applyMove(proposed.move, "", "", false, false)
+            if state.trajectory.isSome:
+              state.trajectory.get().recordAppliedDecision(simCopy, proposed,
+                proposed, seatPrompt, "external-gauntlet", state.sim.done, state.selection)
+            echo "board-gauntlet: ply ", state.sim.plies, "/", config.maxPlies,
+              " ", moveText(state.sim, mover, state.sim.lastMove), " at ",
+              (epochTime() - gameStart).int, "s"
+            state.broadcastLocked()
+          else:
+            failedReason =
+              if rejectedMove.len > 0:
+                "invalid external move: " & cleanText(rejectedMove, MaxMoveLen)
+              elif lostConnection:
+                "external player disconnected"
+              else:
+                "external player timed out"
+            if state.trajectory.isSome:
+              state.trajectory.get().recordAppliedDecision(simCopy, proposed,
+                Decision(move: ""), seatPrompt, "external-gauntlet", false, state.selection)
+        if failedReason.len > 0:
+          failEpisode(runtimeConfig, mover, failedReason)
         if config.turnDelayMs > 0:
           sleep(config.turnDelayMs)
         continue
@@ -388,24 +481,36 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       ## this thread mutates the sim, so the snapshot cannot go stale.
       let decision = client.decide(simCopy, seatPrompt, seatBaseline, state.selection)
       var applied = decision
+      var failedReason = ""
 
       withLock stateLock:
         if decision.illegal:
           inc state.sim.illegalReplies[mover]
-        try:
-          state.sim.applyMove(decision.move, decision.say, decision.notes,
-            decision.scripted, decision.fellBack)
-        except GauntletError as error:
-          echo "board-gauntlet: move rejected; falling back to the tactician baseline"
-          applied = Decision(move: tacticianMove(state.sim), fellBack: true)
-          state.sim.applyMove(applied.move, "", "", false, true)
+        if decision.move.len == 0:
+          applied = Decision(move: "")
+          failedReason =
+            if decision.failureReason.len > 0: decision.failureReason
+            else: "seat failed to produce a legal move"
+        else:
+          try:
+            state.sim.applyMove(decision.move, decision.say, decision.notes,
+              decision.scripted, decision.fellBack)
+          except GauntletError as error:
+            applied = Decision(move: "")
+            failedReason = error.msg
         if state.trajectory.isSome:
           state.trajectory.get().recordAppliedDecision(simCopy, decision,
-            applied, seatPrompt, "scripted-" & seatBaseline, state.sim.done, state.selection)
-        echo "board-gauntlet: ply ", state.sim.plies, "/", config.maxPlies,
-          " ", moveText(state.sim, mover, state.sim.lastMove), " at ",
-          (epochTime() - gameStart).int, "s"
-        state.broadcastLocked()
+            applied, seatPrompt, "scripted-" & seatBaseline,
+            (if failedReason.len == 0: state.sim.done else: false),
+            state.selection)
+        if failedReason.len == 0:
+          echo "board-gauntlet: ply ", state.sim.plies, "/", config.maxPlies,
+            " ", moveText(state.sim, mover, state.sim.lastMove), " at ",
+            (epochTime() - gameStart).int, "s"
+          state.broadcastLocked()
+
+      if failedReason.len > 0:
+        failEpisode(runtimeConfig, mover, failedReason)
 
       if config.turnDelayMs > 0:
         sleep(config.turnDelayMs)
@@ -539,10 +644,16 @@ proc websocketHandler(
           if scriptedNode != nil:
             case scriptedNode.kind
             of JBool:
-              baseline = if scriptedNode.getBool(): "tactician" else: ""
+              if scriptedNode.getBool():
+                raise newException(GauntletError,
+                  "scripted must be false, \"tactician\", or \"hustler\"")
+              baseline = ""
             of JString:
               if isScriptedName(scriptedNode.getStr()):
                 baseline = $parseBaseline(scriptedNode.getStr())
+              elif scriptedNode.getStr().strip().len > 0:
+                raise newException(GauntletError,
+                  "unknown scripted baseline: " & scriptedNode.getStr())
             else:
               discard
           withLock stateLock:
@@ -569,6 +680,7 @@ proc websocketHandler(
                 state.pendingMove = move
               else:
                 inc state.sim.illegalReplies[slot]
+                state.pendingRejected = move
       except CatchableError as error:
         echo "board-gauntlet: rejected player frame for seat ", slot
     of ErrorEvent:

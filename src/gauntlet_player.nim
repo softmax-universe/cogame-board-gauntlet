@@ -3,8 +3,7 @@
 ## Prompt players deliver PLAYER_PROMPT and wait for the game to decide.
 ##
 ## PLAYER_SCRIPTED=tactician|hustler registers the seat as a scripted
-## baseline instead: the server plays it deterministically, no LLM. `1`,
-## `true` and `yes` are accepted synonyms for `tactician`.
+## baseline instead: the server plays it deterministically, no LLM.
 ##
 ## To field your own policy, reuse this image and set PLAYER_PROMPT:
 ##   coworld upload-policy <image> --name my-gauntlet \
@@ -30,9 +29,7 @@ proc scriptedSetting(): string =
     return ""
   if raw in ScriptedNames:
     return raw
-  if raw in ["1", "true", "yes"]:
-    return "tactician"
-  ""
+  quit("unknown PLAYER_SCRIPTED value '" & raw & "' (expected tactician or hustler)", 1)
 
 when isMainModule:
   let url = getEnv("COWORLD_PLAYER_WS_URL")
@@ -78,6 +75,10 @@ when isMainModule:
           socket.send(promptFrame())
         of "final":
           echo "board-gauntlet player: final scores ", payload{"scores"}
+          break
+        of "error":
+          echo "board-gauntlet player: episode failed (unscored): ",
+            payload{"reason"}.getStr()
           break
         else:
           discard

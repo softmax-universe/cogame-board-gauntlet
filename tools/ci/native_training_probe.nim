@@ -1,9 +1,16 @@
-## Actual native client, parser normalization, and authoritative apply probe.
+## Actual native client, canonical parsing, and authoritative apply/failure probe.
 import std/[json, options, os]
 import bitworld/decision_trajectory
 import gauntlet/[prompts, llm, sim, training]
 
-putEnv("COWORLD_LLM_ENDPOINT", paramStr(1))
+let endpoint = paramStr(1)
+let scenario = paramStr(2)
+if scenario == "missing_endpoint":
+  for key in ["COWORLD_LLM_ENDPOINT", "AWS_ENDPOINT_URL_BEDROCK_RUNTIME",
+      "AWS_BEARER_TOKEN_BEDROCK", "ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY_URI"]:
+    delEnv(key)
+else:
+  putEnv("COWORLD_LLM_ENDPOINT", endpoint)
 putEnv("COWORLD_LLM_MODEL", "checkpoint/native-fixture")
 putEnv("COWORLD_LLM_TEMPERATURE", "0")
 var config = defaultGameConfig()
@@ -16,30 +23,54 @@ var game = initSim(config)
 let before = game
 let selection = PromptSelection(variant: pvMixed, seed: 4)
 let decision = newLlmClient(config).decide(game, "Exact private operator prompt", "", selection)
-doAssert decision.nativeAttempts.len == 2
-doAssert not decision.nativeAttempts[0].accepted
-if paramStr(2) == "retry":
+if scenario == "missing_endpoint":
+  doAssert decision.nativeAttempts.len == 0
   doAssert not decision.fellBack
-  doAssert decision.nativeAttempts[1].accepted
-  doAssert decision.move == "a"
+  doAssert decision.move == ""
+  doAssert decision.failureReason.len > 0
 else:
-  doAssert decision.fellBack
-  doAssert not decision.nativeAttempts[1].accepted
-for attempt in decision.nativeAttempts:
-  doAssert attempt.platformCallId.isSome
-  doAssert attempt.rawResponse.kind == JObject
-  doAssert attempt.request["temperature"].getFloat() == 0
-  doAssert attempt.latencyMs.isSome
-  doAssert attempt.inputTokens.get() == 3
-  doAssert attempt.outputTokens.get() == 2
-game.applyMove(decision.move, decision.say, decision.notes, decision.scripted, decision.fellBack)
+  doAssert decision.nativeAttempts.len == 2
+  doAssert not decision.nativeAttempts[0].accepted
+  if scenario == "retry":
+    doAssert not decision.fellBack
+    doAssert decision.nativeAttempts[1].accepted
+    doAssert decision.move == "a"
+  else:
+    doAssert not decision.fellBack
+    doAssert decision.move == ""
+    doAssert decision.failureReason.len > 0
+    doAssert not decision.nativeAttempts[1].accepted
+  if scenario != "backend_error":
+    for attempt in decision.nativeAttempts:
+      doAssert attempt.platformCallId.isSome
+      doAssert attempt.rawResponse.kind == JObject
+      doAssert attempt.request["temperature"].getFloat() == 0
+      doAssert attempt.latencyMs.isSome
+      doAssert attempt.inputTokens.get() == 3
+      doAssert attempt.outputTokens.get() == 2
+
 let trajectory = newDecisionTrajectory("probe", "probe", "board-gauntlet", "fixture", "fixture-source")
-trajectory.recordAppliedDecision(before, decision, decision,
-  "Exact private operator prompt", "native-fixture", game.done, selection)
-trajectory.finish(esTruncated, game.resultsJson(), %*{})
+if decision.move.len > 0:
+  game.applyMove(decision.move, decision.say, decision.notes, decision.scripted, decision.fellBack)
+  trajectory.recordAppliedDecision(before, decision, decision,
+    "Exact private operator prompt", "native-fixture", game.done, selection)
+  trajectory.finish(esTruncated, game.resultsJson(), %*{})
+else:
+  doAssert not game.done
+  trajectory.recordAppliedDecision(before, decision, Decision(move: ""),
+    "Exact private operator prompt", "native-fixture", false, selection)
+  let failureOutcome = %*{
+    "status": "failed",
+    "scored": false,
+    "seat": before.mover,
+    "reason": decision.failureReason,
+    "game": $game.config.game,
+    "plies": game.plies
+  }
+  trajectory.finish(esFailed, failureOutcome, %*{})
 echo trajectory.eventsJsonl()
 
-if paramCount() >= 3:
+if paramCount() >= 3 and scenario == "retry":
   let output = paramStr(3)
   let complete = newDecisionTrajectory("probe", "gauntlet-" & $config.seed,
     "board-gauntlet", "fixture", "fixture-source")
