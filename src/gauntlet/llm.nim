@@ -42,6 +42,7 @@ type
     scripted*: bool      ## decided by an explicitly configured baseline
     fellBack*: bool      ## legacy flag; always false (no synthetic fallbacks)
     illegal*: bool       ## the reply parsed but did not name a legal move
+    invalidReply*: bool
     failureReason*: string
     nativeAttempts*: seq[DecisionAttempt]
 
@@ -682,8 +683,10 @@ proc decide*(client: LlmClient, sim: Sim, operatorPrompt: string,
     evidence.prompt = %*[{"role": "system", "content": system},
       {"role": "user", "content": user}]
     var text = ""
+    result.invalidReply = false
     try:
       text = client.completeText(system, user, seat, evidence)
+      result.invalidReply = true
       var decision = sim.parseReply(extractJsonObject(text))
       ## Reject an illegal move HERE so the retry carries the printed set,
       ## computed by the same predicate the validator applies.

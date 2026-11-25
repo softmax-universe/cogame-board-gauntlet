@@ -249,7 +249,8 @@ proc finishEpisode(runtimeConfig: RuntimeConfig) =
   echo "board-gauntlet: episode complete, shutting down"
   quit(0)
 
-proc failEpisode(runtimeConfig: RuntimeConfig, seat: int, reason: string) =
+proc failEpisode(runtimeConfig: RuntimeConfig, seat: int, reason: string,
+    playerError = false) =
   ## Propagates an unscored execution failure to the host without writing
   ## results.json or awarding points to any player, while preserving actual
   ## trajectory evidence and writing COGAME_PLAYER_FAILURE_URI if configured.
@@ -293,7 +294,12 @@ proc failEpisode(runtimeConfig: RuntimeConfig, seat: int, reason: string) =
   if failureUri.len > 0:
     try:
       writeArtifact(
-        failureUri, $failurePayload, "application/json",
+        failureUri, $(%*{
+          "kind": (if playerError: "player_error" else: "episode_inconclusive"),
+          "failed_policy_index": seat,
+          "message": (if playerError: "Player submitted an invalid move"
+                      else: "Player could not complete its turn")
+        }), "application/json",
         "COGAME_PLAYER_FAILURE_METHOD"
       )
     except CatchableError as error:
@@ -463,7 +469,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
               state.trajectory.get().recordAppliedDecision(simCopy, proposed,
                 Decision(move: ""), seatPrompt, "external-gauntlet", false, state.selection)
         if failedReason.len > 0:
-          failEpisode(runtimeConfig, mover, failedReason)
+          failEpisode(runtimeConfig, mover, failedReason, rejectedMove.len > 0)
         if config.turnDelayMs > 0:
           sleep(config.turnDelayMs)
         continue
@@ -511,7 +517,7 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
           state.broadcastLocked()
 
       if failedReason.len > 0:
-        failEpisode(runtimeConfig, mover, failedReason)
+        failEpisode(runtimeConfig, mover, failedReason, decision.invalidReply or decision.move.len > 0)
 
       if config.turnDelayMs > 0:
         sleep(config.turnDelayMs)
