@@ -388,17 +388,14 @@
   },
   "player": [
     {
-      "id": "board-gauntlet-hustler",
-      "name": "Board Gauntlet Hustler",
+      "id": "board-gauntlet-player",
+      "name": "Board Gauntlet Prompt Player",
       "type": "player",
-      "description": "The scripted hustler baseline as a fieldable policy: maximises its own progress and never defends. It registers its seat as rule-based so the game server plays it deterministically, no LLM involved. Upload this image with PLAYER_PROMPT (and no PLAYER_SCRIPTED) to field a prompt policy.",
+      "description": "Prompt policy: sends PLAYER_PROMPT to the game, where Claude chooses moves. Upload this image with a different PLAYER_PROMPT to field another prompt policy.",
       "image": "{{BOARD_GAUNTLET_IMAGE}}",
       "run": [
         "/bin/board-gauntlet-player"
       ],
-      "env": {
-        "PLAYER_SCRIPTED": "hustler"
-      },
       "resources": {
         "requests": {
           "cpu": "100m",
@@ -408,7 +405,11 @@
           "cpu": "1"
         }
       },
-      "source_url": "https://github.com/softmax-universe/cogame-board-gauntlet/tree/main"
+      "source_url": "https://github.com/softmax-universe/cogame-board-gauntlet/tree/main",
+      "env": {
+        "COWORLD_LLM_ENABLED": "true",
+        "COWORLD_LLM_MODEL": "anthropic/claude-haiku-4.5"
+      }
     },
     {
       "id": "board-gauntlet-scripted",
@@ -574,7 +575,7 @@
     },
     "players": [
       {
-        "player_id": "board-gauntlet-hustler"
+        "player_id": "board-gauntlet-player"
       },
       {
         "player_id": "board-gauntlet-scripted"

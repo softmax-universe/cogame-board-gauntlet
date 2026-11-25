@@ -354,7 +354,8 @@ proc runGame(runtimeConfig: RuntimeConfig) {.gcsafe.} =
       else: 0.0
     let sidecarEndpoint = getEnv("COWORLD_LLM_ENDPOINT").strip()
     let localSidecar = sidecarEndpoint.startsWith("http://127.0.0.1") or
-      sidecarEndpoint.startsWith("http://localhost")
+      sidecarEndpoint.startsWith("http://localhost") or
+      sidecarEndpoint.startsWith("http://host.docker.internal")
     let plySpacing =
       if localSidecar: 0
       elif config.plySpacingSeconds > 0: config.plySpacingSeconds
