@@ -335,6 +335,8 @@ proc parseWall*(sim: Sim, move: string): tuple[row, col: int,
     horizontal: bool] =
   let horizontal = move[^1] == 'h'
   let body = move[0 ..< move.high]
+  if body.len < 2 or body[0] notin 'a' .. 'z' or body[1] notin '1' .. '9':
+    raise newException(GauntletError, "not a wall: " & move)
   let col = ord(body[0]) - ord('a')
   var rank = 0
   for index in 1 ..< body.len:
@@ -410,19 +412,3 @@ proc immediateWinMoves*(sim: Sim): seq[string] =
 
 proc hasImmediateWin*(sim: Sim): bool =
   sim.immediateWinMoves().len > 0
-
-proc normalizeMove*(sim: Sim, cleaned: string): string =
-  ## `<file><rank>` is a pawn move; `<file><rank>h|v` is a wall.
-  if cleaned.len == 2:
-    let col = ord(cleaned[0]) - ord('a')
-    let row = ord(cleaned[1]) - ord('1')
-    if col < 0 or col >= boardCols(sim) or row < 0 or row >= boardRows(sim):
-      return ""
-    return fileLetter(col) & $(row + 1)
-  if cleaned.len == 3 and (cleaned[2] == 'h' or cleaned[2] == 'v'):
-    let col = ord(cleaned[0]) - ord('a')
-    let row = ord(cleaned[1]) - ord('1')
-    if not sim.anchorOnBoard(row, col):
-      return ""
-    return fileLetter(col) & $(row + 1) & cleaned[2]
-  ""

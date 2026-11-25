@@ -4,6 +4,7 @@
 import std/[json, random, sets, unittest]
 import gauntlet/sim
 import gauntlet/llm
+import gauntlet/prompts
 
 const AllGames = [gConnectFour, gBreakthrough, gHex, gQuoridor]
 
@@ -489,31 +490,63 @@ suite "legality":
           sim.applyMove(sim.legalMoves()[rng.rand(sim.legalMoves().high)],
             "", "", true, false)
 
-  test "normalizeMove accepts the tolerated spellings and nothing else":
+  test "parseReply and extractJsonObject accept only exact canonical moves and outer JSON fences":
     var four = initSim(variantConfig(gConnectFour))
-    for raw in ["d", "D", " d ", "4", "column d \u2014 centre"]:
-      check four.normalizeMove(raw) == "d"
-    check four.normalizeMove("h") == ""
-    check four.normalizeMove("b2-c3") == "b"    ## first standalone token
+    check four.parseReply(extractJsonObject("""{"move": "d", "say": "center", "notes": "n"}""")).move == "d"
+    check four.parseReply(extractJsonObject("```json\n{\"move\": \"d\"}\n```")).move == "d"
+    check four.parseReply(extractJsonObject("```\n{\"move\": \"d\"}\n```")).move == "d"
+    for raw in ["D", " d ", "4", "column d \u2014 centre", "h", "b2-c3"]:
+      expect GauntletError:
+        discard four.parseReply(%*{"move": raw})
+    for wrapped in [
+      "I choose {\"move\": \"d\"}",
+      "{\"move\": \"d\"} thanks",
+      "Here:\n```json\n{\"move\": \"d\"}\n```",
+      "```json\n{\"move\": \"d\"}\n```\nextra",
+      "```python\n{\"move\": \"d\"}\n```",
+      "[\"d\"]"
+    ]:
+      expect GauntletError:
+        discard extractJsonObject(wrapped)
+
     var hexSim = initSim(variantConfig(gHex, size = 7))
-    check hexSim.normalizeMove("c4") == "c4"
-    check hexSim.normalizeMove("C4") == "c4"
-    check hexSim.normalizeMove("h4") == ""
-    check hexSim.normalizeMove("c8") == ""
-    check hexSim.normalizeMove("b2-c3") == ""   ## a different game's move
-    check hexSim.normalizeMove("e3h") == ""
+    check hexSim.parseReply(%*{"move": "c4"}).move == "c4"
+    for raw in ["C4", " c4 ", "h4", "c8", "b2-c3", "e3h", "c04"]:
+      expect GauntletError:
+        discard hexSim.parseReply(%*{"move": raw})
+
     var bt = initSim(variantConfig(gBreakthrough, size = 6))
-    for raw in ["b2-c3", "b2c3", "b2 x c3", "B2-C3"]:
-      check bt.normalizeMove(raw) == "b2-c3"
-    check bt.normalizeMove("c4") == ""
-    check bt.normalizeMove("g2-h3") == ""
+    check bt.parseReply(%*{"move": "b2-c3"}).move == "b2-c3"
+    for raw in ["b2c3", "b2 x c3", "B2-C3", " b2-c3 ", "c4", "g2-h3"]:
+      expect GauntletError:
+        discard bt.parseReply(%*{"move": raw})
+
     var quo = initSim(variantConfig(gQuoridor, size = 9))
-    check quo.normalizeMove("e2") == "e2"
-    check quo.normalizeMove("e3h") == "e3h"
-    check quo.normalizeMove("E3 H") == "e3h"
-    check quo.normalizeMove("i9") == "i9"
-    check quo.normalizeMove("i9h") == ""        ## anchors stop at h8
-    check quo.normalizeMove("b2-c3") == ""
+    check quo.parseReply(%*{"move": "e2"}).move == "e2"
+    check quo.parseReply(%*{"move": "e3h"}).move == "e3h"
+    for raw in ["E2", "E3 H", "e3-h", "i9", "i9h", "b2-c3", "e03h"]:
+      expect GauntletError:
+        discard quo.parseReply(%*{"move": raw})
+
+    ## Scripted baseline names reject old compatibility synonyms.
+    check isScriptedName("tactician")
+    check isScriptedName("hustler")
+    for alias in ["1", "true", "yes", ""]:
+      check not isScriptedName(alias)
+      expect GauntletError:
+        discard parseBaseline(alias)
+
+    ## Missing LLM endpoint never synthesizes a move, while explicit baselines still work.
+    let noLlm = LlmClient(disabled: true)
+    let missing = noLlm.decide(four, "Play well", "", PromptSelection())
+    check missing.move == ""
+    check not missing.fellBack
+    check not missing.scripted
+    check missing.failureReason.len > 0
+    let explicit = noLlm.decide(four, "Play well", "tactician", PromptSelection())
+    check explicit.scripted
+    check not explicit.fellBack
+    check four.isLegalMove(explicit.move)
 
 # ---- 9. Termination bound ---------------------------------------------------
 

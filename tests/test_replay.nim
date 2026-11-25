@@ -399,15 +399,13 @@ suite "strict utf-8":
     let replayed = replayMatch(sim.config, events)
     check replayed[^1].boardStateJson() == sim.boardStateJson()
 
-  test "a move string over the cap is cut on a rune boundary too":
+  test "a move string over the cap is rejected and cut cleanly on a rune boundary in errors":
     var sim = initSim(variantConfig(gHex, seed = 6))
     var long = "c4"
     for _ in 0 ..< 30:
       long.add("\u65E5")
-    ## normalizeMove caps the raw string first; the result is still a legal
-    ## cell name and never a truncated multi-byte sequence.
-    let move = sim.normalizeMove(long)
-    check move == "c4"
+    expect GauntletError:
+      discard sim.parseReply(%*{"move": long})
     check validateUtf8(cleanText(long, MaxMoveLen)) == -1
     check cleanText(long, MaxMoveLen).runeLen == MaxMoveLen
 

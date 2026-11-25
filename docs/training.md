@@ -1,7 +1,7 @@
 # Private language training
 
-The ordinary hosted game owns language requests, prompt construction, reply
-normalization, and action application. Training uses that exact path.
+The ordinary hosted game owns language requests, prompt construction, canonical
+reply parsing, and action application. Training uses that exact path.
 The native Messages endpoint is `COWORLD_LLM_ENDPOINT`; set
 `COWORLD_LLM_MODEL` to a registered `checkpoint/<artifact-sha256>` identity.
 `COWORLD_LLM_TEMPERATURE` explicitly selects temperature from 0 through 1;
@@ -12,8 +12,11 @@ A player cannot choose its own checkpoint URL or serving identity.
 To capture private hosted evidence, supply `COGAME_SAVE_TRAJECTORY_URI`,
 `COWORLD_EPISODE_ID`, `COWORLD_GAME_VERSION`, and `COWORLD_SOURCE_REVISION`.
 The game records every native attempt, retry, platform call ID, and actual
-executed action. Missing credentials or invalid replies produce consumed
-fallbacks, which are excluded from model learning targets. Terminal outcomes
+executed action. Missing endpoints, backend failures, timeouts, disconnects, or
+invalid replies after retry fail the episode unscored
+(`action_status = "rejected"` or `"missing"`, `executed_action = null`,
+`status = "failed"`, no scripted substitution and no points awarded).
+Terminal outcomes
 and all seats remain in the private episode. Public replay contains no new
 training prompts or native responses. Private corpora are excluded from image
 build contexts and must never be published as replay artifacts.

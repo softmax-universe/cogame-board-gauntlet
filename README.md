@@ -56,7 +56,7 @@ For model training from complete local games, see
 - **`tactician`** — wins on the spot when it can; otherwise refuses moves that
   hand the opponent an immediate win; otherwise maximises
   `standing(self) − standing(opponent)`; ties go to the lowest canonical move
-  index. It is also the fallback every failed LLM decision lands on.
+  index.
 - **`hustler`** — never defends. It maximises its own progress and ignores the
   opponent's, with a per-game pre-filter (centre files in Connect Four, the most
   advanced piece in Breakthrough, its own shortest route in Hex, walls only when
@@ -79,7 +79,9 @@ farm the metric instead of winning.
 finer ending rides in `results.ending`, one of `line`, `board-full`,
 `home-rank`, `no-pieces`, `no-moves`, `connection`, `goal-row`, `ply-cap` or
 `wall-clock`. A `deadline` result is a real result: the position is fully scored
-by `standing` at the stop.
+by `standing` at the stop. Missing LLM endpoints, backend failures, timeouts,
+disconnects, or invalid model actions fail the episode unscored (no synthetic
+moves and no points awarded to any seat).
 
 The replay viewer draws an **eval bar** from that same `standing` heuristic and
 captions it `HEURISTIC`, because it is this repository's own heuristic and not
@@ -114,7 +116,7 @@ tests/                               sim, bot, replay and manifest tests
 
 `gauntlet.player.v2` over `COWORLD_PLAYER_WS_URL`: `welcome`, a per-ply
 redacted `state`, and a `final` frame. Prompt and scripted players send
-`{"type":"prompt","prompt":…,"scripted":"tactician"|"hustler"|true|false}` on
+`{"type":"prompt","prompt":…,"scripted":"tactician"|"hustler"|false}` on
 connect and again after `welcome`. External players send
 `{"type":"register","control":"external"}` and receive an `observation`
 frame on each turn. They reply with `{"type":"action","id":N,"move":"…"}`.

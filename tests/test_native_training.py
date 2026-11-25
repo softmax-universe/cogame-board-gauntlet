@@ -1,4 +1,4 @@
-"""Probe actual native game clients with retries and consumed fallbacks."""
+"""Probe actual native game clients with retries and unscored execution failures."""
 
 import json
 import os
@@ -30,7 +30,7 @@ with tempfile.TemporaryDirectory(prefix=GAME + "-native-") as temporary:
         "tools/verify_native_posttrain.nim"
     ]
     subprocess.run(verifier_command, cwd=root, check=True, capture_output=True, text=True)
-    for scenario in ["retry", "fallback"]:
+    for scenario in ["retry", "rejected", "backend_error", "missing_endpoint"]:
         calls = []
 
         class NativeHandler(BaseHTTPRequestHandler):
@@ -47,14 +47,20 @@ with tempfile.TemporaryDirectory(prefix=GAME + "-native-") as temporary:
                 assert "Exact private operator prompt" in request["messages"][0]["content"]
                 if self.captured_calls:
                     assert "previous reply" in request["messages"][0]["content"]
+                call_id = str(uuid.uuid4())
+                if self.case == "backend_error":
+                    self.captured_calls.append((request, call_id, ""))
+                    body = b'{"error": "upstream backend unavailable"}'
+                    self.send_response(503)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("X-Softmax-Llm-Call-Id", call_id)
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
                 raw = "PRIVATE REPLY SENTINEL: invalid JSON"
                 if self.captured_calls and self.case == "retry":
-                    raw = (
-                        '{"move":"play 1"}'
-                        if GAME == "hanabi"
-                        else '{"move":"A","notes":"private memory","say":"public line"}'
-                    )
-                call_id = str(uuid.uuid4())
+                    raw = '{"move":"a","notes":"private memory","say":"public line"}'
                 self.captured_calls.append((request, call_id, raw))
                 body = json.dumps(
                     {
@@ -101,45 +107,51 @@ with tempfile.TemporaryDirectory(prefix=GAME + "-native-") as temporary:
             assert "PRIVATE REPLY SENTINEL" not in diagnostics
             events = [json.loads(line) for line in result.stdout.splitlines() if line.startswith("{")]
             decision = events[0]
-            assert decision["action_status"] == ("accepted" if scenario == "retry" else "fallback")
-            assert len(decision["attempts"]) == len(calls) == 2
+            if scenario == "missing_endpoint":
+                assert decision["action_status"] == "missing"
+                assert len(decision["attempts"]) == len(calls) == 0
+            elif scenario == "retry":
+                assert decision["action_status"] == "accepted"
+                assert len(decision["attempts"]) == len(calls) == 2
+            else:
+                assert decision["action_status"] == "rejected"
+                assert len(decision["attempts"]) == len(calls) == 2
+
             for attempt, (request, call_id, raw) in zip(decision["attempts"], calls, strict=True):
                 assert attempt["request"] == request
-                assert attempt["model"] == "served-checkpoint/native-fixture"
                 assert attempt["platform_call_id"] == call_id
-                assert attempt["prompt_token_ids"] == [10, 11]
-                assert attempt["sampled_token_ids"] == [12]
-                assert attempt["behavior_logprobs"] is None
-                assert attempt["raw_response"]["content"][0]["text"] == raw
                 assert attempt["prompt"][1]["content"] == request["messages"][0]["content"]
+                if scenario != "backend_error":
+                    assert attempt["model"] == "served-checkpoint/native-fixture"
+                    assert attempt["prompt_token_ids"] == [10, 11]
+                    assert attempt["sampled_token_ids"] == [12]
+                    assert attempt["behavior_logprobs"] is None
+                    assert attempt["raw_response"]["content"][0]["text"] == raw
+
             if scenario == "retry":
                 assert decision["selected_attempt_id"] == decision["attempts"][1]["attempt_id"]
                 assert decision["executed_action"] == decision["attempts"][1]["parsed_action"]
-            else:
-                assert decision["selected_attempt_id"] is None
-                assert decision["fallback_origin"].startswith("scripted-")
-            assert events[-1]["status"] == "truncated"
-            replay = json.loads((fixture / "replay.json").read_text())
-            public_moves = [event for event in replay["events"] if event["kind"] == "move"]
-            assert public_moves
-            assert all("notes" not in event for event in public_moves)
-            verify_command = [
-                str(verifier),
-                str(fixture / "replay.json"),
-                str(fixture / "trajectory.jsonl"),
-                "probe",
-                "fixture-source",
-            ]
-            verified = subprocess.run(
-                verify_command,
-                cwd=root,
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            assert verified.returncode == 0, verified.stderr
-            assert json.loads(verified.stdout)["full_schedule"]
-            if scenario == "retry":
+                assert events[-1]["status"] == "truncated"
+                replay = json.loads((fixture / "replay.json").read_text())
+                public_moves = [event for event in replay["events"] if event["kind"] == "move"]
+                assert public_moves
+                assert all("notes" not in event for event in public_moves)
+                verify_command = [
+                    str(verifier),
+                    str(fixture / "replay.json"),
+                    str(fixture / "trajectory.jsonl"),
+                    "probe",
+                    "fixture-source",
+                ]
+                verified = subprocess.run(
+                    verify_command,
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                assert verified.returncode == 0, verified.stderr
+                assert json.loads(verified.stdout)["full_schedule"]
                 private = [json.loads(line) for line in (fixture / "trajectory.jsonl").read_text().splitlines()]
                 assert private[0]["executed_action"]["notes"] == "private memory"
                 private[0]["executed_action"]["notes"] = "forged private memory"
@@ -153,6 +165,16 @@ with tempfile.TemporaryDirectory(prefix=GAME + "-native-") as temporary:
                     timeout=30,
                 )
                 assert rejected.returncode != 0
+            else:
+                assert decision["selected_attempt_id"] is None
+                assert decision["fallback_origin"] is None
+                assert decision["executed_action"] is None
+                assert decision["terminal"] is False
+                assert events[-1]["status"] == "failed"
+                assert events[-1]["outcome"]["scored"] is False
+                assert events[-1]["outcome"]["status"] == "failed"
+                assert events[-1]["participant_outcomes"] == {}
+                assert not (fixture / "replay.json").exists()
             print(GAME, scenario, "native payload/private attempt/action joins passed")
         finally:
             server.shutdown()

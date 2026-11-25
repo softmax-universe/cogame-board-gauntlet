@@ -1,5 +1,5 @@
-## Claude-backed decision making for Board Gauntlet, plus the two scripted
-## baselines every fallback lands on.
+## Claude-backed decision making for Board Gauntlet, plus the two explicitly
+## configured scripted baselines (`tactician` and `hustler`).
 ##
 ## A policy here is just a prompt: the game server composes the acting
 ## seat's observation — the whole position, the whole move history and the
@@ -11,9 +11,8 @@
 ##   Bedrock bearer token            - local play
 ##   ANTHROPIC_API_KEY                - the key itself
 ##   ANTHROPIC_API_KEY_URI            - a URI holding the key
-## With no credentials every decision falls back to the always-legal
-## `tactician` baseline immediately (no retries, no network waits) so
-## offline certification still completes - this fallback is load-bearing.
+## Missing endpoint/credentials, backend failures, timeouts, or invalid model
+## actions never synthesize a move; the episode fails unscored.
 
 import
   std/[json, options, os, strutils, times],
@@ -40,9 +39,10 @@ type
     move*: string
     say*: string
     notes*: string
-    scripted*: bool   ## decided by a baseline rather than by the model
-    fellBack*: bool   ## an LLM decision was attempted and failed
-    illegal*: bool    ## the reply parsed but did not name a legal move
+    scripted*: bool      ## decided by an explicitly configured baseline
+    fellBack*: bool      ## legacy flag; always false (no synthetic fallbacks)
+    illegal*: bool       ## the reply parsed but did not name a legal move
+    failureReason*: string
     nativeAttempts*: seq[DecisionAttempt]
 
   Baseline* = enum
@@ -67,14 +67,13 @@ type
     disabled*: bool
 
 proc parseBaseline*(text: string): Baseline =
-  ## `1`, `true` and `yes` are accepted synonyms for `tactician`.
   case text.strip().toLowerAscii()
+  of "tactician": blTactician
   of "hustler": blHustler
-  else: blTactician
+  else: raise newException(GauntletError, "unknown scripted baseline: " & text)
 
 proc isScriptedName*(text: string): bool =
-  text.strip().toLowerAscii() in
-    ["tactician", "hustler", "1", "true", "yes"]
+  text.strip().toLowerAscii() in ["tactician", "hustler"]
 
 proc resolveApiKey(): string =
   result = getEnv("ANTHROPIC_API_KEY").strip()
@@ -152,8 +151,7 @@ proc newLlmClient*(config: GameConfig): LlmClient =
   else:
     result.transport = ltNone
     result.disabled = true
-    echo "board-gauntlet llm: no LLM credentials; every seat plays the ",
-      "tactician baseline"
+    echo "board-gauntlet llm: no LLM endpoint or credentials configured"
 
 # ---- The scripted baselines -------------------------------------------------
 #
@@ -506,15 +504,39 @@ proc userPrompt*(sim: Sim, seat: int, operatorPrompt: string): string =
 
 # ---- Anthropic / Bedrock transport ------------------------------------------
 
+proc stripOuterJsonFence(text: string): string =
+  ## Strips one standard outer Markdown JSON fence (```json ... ``` or ``` ... ```),
+  ## requiring the fence to wrap the entire trimmed response.
+  let trimmed = text.strip()
+  if not trimmed.startsWith("```"):
+    return trimmed
+  let firstNewline = trimmed.find('\n')
+  if firstNewline < 0:
+    return trimmed
+  let header = trimmed[3 ..< firstNewline].strip().toLowerAscii()
+  if header.len > 0 and header != "json":
+    return trimmed
+  if not trimmed.endsWith("```"):
+    return trimmed
+  let bodyEnd = trimmed.len - 3
+  if bodyEnd <= firstNewline:
+    return trimmed
+  let body = trimmed[firstNewline + 1 ..< bodyEnd]
+  if body.len > 0 and body[^1] != '\n' and body[^1] != '\r':
+    return trimmed
+  body.strip()
+
 proc extractJsonObject*(text: string): JsonNode =
-  ## Pulls the first {...} object out of a model response, tolerating
-  ## fences and trailing prose.
-  let start = text.find('{')
-  let stop = text.rfind('}')
-  if start < 0 or stop <= start:
+  ## Parses a JSON object response, optionally wrapped in one standard outer
+  ## Markdown JSON fence, with no surrounding prose.
+  let body = stripOuterJsonFence(text)
+  if body.len == 0 or body[0] != '{' or body[^1] != '}':
     raise newException(GauntletError, "no JSON object in response: " &
       cleanText(text, MaxErrorLen))
-  parseJson(text[start .. stop])
+  result = parseJson(body)
+  if result.kind != JObject:
+    raise newException(GauntletError, "response must be a JSON object: " &
+      cleanText(text, MaxErrorLen))
 
 proc completeText(client: LlmClient, system, user: string, slot: int,
     evidence: var DecisionAttempt): string =
@@ -614,31 +636,41 @@ proc completeText(client: LlmClient, system, user: string, slot: int,
       "any JSON: " & cleanText(result, MaxErrorLen))
 
 proc parseReply*(sim: Sim, payload: JsonNode): Decision =
-  ## Maps the model's JSON onto a canonical move. Every recorded string is
-  ## truncated on a RUNE boundary here, before it can reach an event.
+  ## Maps the model's JSON onto an exact canonical legal move. Every recorded
+  ## text field is truncated on a RUNE boundary here, before it can reach an event.
+  if payload.isNil or payload.kind != JObject:
+    raise newException(GauntletError, "response must be a JSON object")
   let node = payload{"move"}
   if node.isNil or node.kind != JString:
     raise newException(GauntletError, "no move string in response")
   result.say = cleanText(payload{"say"}.getStr(), MaxSayLen)
   result.notes = cleanText(payload{"notes"}.getStr(), MaxNotesLen)
-  result.move = sim.normalizeMove(node.getStr())
-  if result.move.len == 0:
+  let move = node.getStr()
+  if not sim.isLegalMove(move):
     raise newException(GauntletError,
-      "'" & cleanText(node.getStr(), MaxMoveLen) & "' does not name a " &
+      "'" & cleanText(move, MaxMoveLen) & "' is not a legal " &
       $sim.config.game & " move")
+  result.move = move
 
 proc decide*(client: LlmClient, sim: Sim, operatorPrompt: string,
     baseline: string, selection: PromptSelection): Decision =
-  ## One decision for the seat to move. NEVER raises: every failure falls
-  ## back to `tactician`, so the episode always advances.
+  ## One decision for the seat to move. Explicitly configured scripted baselines
+  ## play deterministically. Missing endpoint/credentials, backend failures,
+  ## timeouts, or invalid replies return an empty move with `failureReason`
+  ## (never synthesizing a move) so the host marks the episode failed/unscored.
   if baseline.len > 0:
     return Decision(move: scriptedMove(sim, parseBaseline(baseline)),
       scripted: true)
-  if client.isNil or client.disabled:
-    return Decision(move: scriptedMove(sim, blTactician), fellBack: true)
+  if client.isNil or client.transport == ltNone:
+    return Decision(move: "", scripted: false, fellBack: false, illegal: false,
+      failureReason: "missing LLM endpoint or credentials")
+  if client.disabled:
+    return Decision(move: "", scripted: false, fellBack: false, illegal: false,
+      failureReason: "LLM client disabled after authentication failure")
   let seat = sim.mover
   let system = systemPrompt(sim, seat, selection)
   var illegal = false
+  var lastError = "LLM failed to produce a legal move"
   for attempt in 0 .. 1:
     var user = sim.userPrompt(seat, operatorPrompt)
     if attempt > 0:
@@ -664,17 +696,18 @@ proc decide*(client: LlmClient, sim: Sim, operatorPrompt: string,
       decision.nativeAttempts = result.nativeAttempts
       return decision
     except CatchableError as error:
+      lastError = error.msg
       evidence.response = %text
       evidence.rejectionReason = some(error.msg)
       result.nativeAttempts.add(evidence)
-      if "is not a legal" in error.msg or "does not name a" in error.msg:
+      if "is not a legal" in error.msg:
         illegal = true
       echo "board-gauntlet llm: seat ", seat, " attempt ", attempt, " failed"
       if client.disabled:
         break
-  echo "board-gauntlet llm: seat ", seat, " falling back to the tactician ",
-    "baseline"
-  result.move = scriptedMove(sim, blTactician)
+  echo "board-gauntlet llm: seat ", seat, " failed to submit a legal move"
+  result.move = ""
   result.scripted = false
-  result.fellBack = true
+  result.fellBack = false
   result.illegal = illegal
+  result.failureReason = lastError

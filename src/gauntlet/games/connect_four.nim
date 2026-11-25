@@ -5,7 +5,7 @@
 ## a row, in any of the four directions, wins on the spot; a full board
 ## with no line is a draw.
 
-import std/strutils, ../types
+import ../types
 
 const
   ## Window weights by the mover's disc count in a four-cell window that
@@ -153,31 +153,3 @@ proc immediateWinMoves*(sim: Sim): seq[string] =
 
 proc hasImmediateWin*(sim: Sim): bool =
   sim.immediateWinMoves().len > 0
-
-proc normalizeMove*(sim: Sim, cleaned, raw: string): string =
-  ## `cleaned` is the lower-cased alphanumeric-only string; `raw` is the
-  ## original, used to find a standalone one-character token so that
-  ## "column d - centre" reads as `d` rather than as the `c` of "column".
-  let cols = boardCols(sim)
-  proc asFile(text: string): string =
-    if text.len != 1:
-      return ""
-    let ch = text[0]
-    if ch >= 'a' and ord(ch) - ord('a') < cols:
-      return $ch
-    if ch >= '1' and ord(ch) - ord('1') < cols:
-      return fileLetter(ord(ch) - ord('1'))
-    ""
-  ## Every byte outside a-z0-9 becomes a space, so multi-byte punctuation
-  ## (an em dash) separates tokens instead of joining them.
-  var flat = newStringOfCap(raw.len)
-  for ch in raw.toLowerAscii():
-    if ch in {'a' .. 'z', '0' .. '9'}: flat.add(ch)
-    else: flat.add(' ')
-  for part in flat.splitWhitespace():
-    let candidate = asFile(part)
-    if candidate.len > 0:
-      return candidate
-  if cleaned.len == 0:
-    return ""
-  asFile($cleaned[0])

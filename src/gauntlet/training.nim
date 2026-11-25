@@ -9,10 +9,11 @@ proc decisionAction*(decision: Decision): JsonNode =
 proc recordAppliedDecision*(trajectory: DecisionTrajectory, before: Sim,
     proposed, applied: Decision, operatorPrompt, policy: string, terminal: bool, selection: PromptSelection) =
   let seat = before.mover
-  let actualAction = applied.decisionAction()
+  let rejected = applied.move.len == 0
+  let actualAction = if rejected: newJNull() else: applied.decisionAction()
   var attempts = proposed.nativeAttempts
   var selected = none(string)
-  if not applied.fellBack and attempts.len == 0:
+  if not rejected and not applied.fellBack and attempts.len == 0:
     let origin = if applied.scripted: aoTeacher else: aoUnknown
     var evidence = newDecisionAttempt("ply-" & $before.plies & "-applied", policy, origin)
     evidence.prompt = %*[{"role": "system", "content": before.systemPrompt(seat, selection)},
@@ -22,7 +23,7 @@ proc recordAppliedDecision*(trajectory: DecisionTrajectory, before: Sim,
     evidence.accepted = true
     attempts.add(evidence)
   for index in 0 ..< attempts.len:
-    if applied.fellBack and attempts[index].accepted:
+    if (rejected or applied.fellBack) and attempts[index].accepted:
       attempts[index].accepted = false
       attempts[index].rejectionReason = some("Authoritative engine rejected the proposed move")
     elif attempts[index].accepted:
@@ -37,7 +38,12 @@ proc recordAppliedDecision*(trajectory: DecisionTrajectory, before: Sim,
       "prompt_template": selection.promptMetadata(attempt.prompt[0]["content"].getStr(),
         attempt.prompt[1]["content"].getStr())})
   view["prompt_attempts"] = promptAttempts
+  let status =
+    if rejected:
+      if attempts.len == 0: asMissing else: asRejected
+    elif applied.fellBack: asFallback
+    else: asAccepted
   trajectory.recordDecision("gauntlet-" & $before.plies, $seat,
     view, attempts, selected, actualAction,
-    if applied.fellBack: asFallback else: asAccepted, terminal = terminal,
+    status, terminal = terminal,
     fallbackOrigin = if applied.fellBack: some("scripted-tactician") else: none(string))

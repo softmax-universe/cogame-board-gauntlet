@@ -169,16 +169,6 @@ proc immediateWinMoves*(sim: Sim): seq[string] =
 proc hasImmediateWin*(sim: Sim): bool =
   sim.distToWin(sim.mover) == 1
 
-proc normalizeMove*(sim: Sim, cleaned: string): string =
-  ## `<file><rank>`, single-digit rank, on this board.
-  if cleaned.len != 2:
-    return ""
-  let col = ord(cleaned[0]) - ord('a')
-  let row = ord(cleaned[1]) - ord('1')
-  if col < 0 or col >= boardCols(sim) or row < 0 or row >= boardRows(sim):
-    return ""
-  fileLetter(col) & $(row + 1)
-
 proc shortestRouteCells*(sim: Sim, seat: int): seq[int] =
   ## The EMPTY cells on ONE shortest 0-1 route between the seat's edges —
   ## the cells it would still have to fill to connect. Ties resolve toward
