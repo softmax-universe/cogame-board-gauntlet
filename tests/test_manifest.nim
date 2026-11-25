@@ -168,8 +168,11 @@ suite "upload contract":
       check player["resources"]["limits"]["cpu"].getStr() == "1"
       check player["resources"]["requests"]["cpu"].getStr() == "100m"
       check player["resources"]["requests"]["memory"].getStr() == "64Mi"
-    check manifest["player"][0]["env"]["PLAYER_SCRIPTED"].getStr() ==
-      "hustler"
+    check manifest["player"][0]["id"].getStr() == "board-gauntlet-player"
+    check manifest["player"][0]["env"]["COWORLD_LLM_ENABLED"].getStr() == "true"
+    check manifest["player"][0]["env"]["COWORLD_LLM_MODEL"].getStr().len > 0
+    check not manifest["player"][0]["env"].hasKey("PLAYER_SCRIPTED")
+    check manifest["player"][1]["id"].getStr() == "board-gauntlet-scripted"
     check manifest["player"][1]["env"]["PLAYER_SCRIPTED"].getStr() ==
       "tactician"
 

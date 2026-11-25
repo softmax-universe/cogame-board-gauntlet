@@ -46,9 +46,11 @@ history, and complete legal-move list. It returns an exact move for the game
 to validate and apply.
 
 Set **`PLAYER_SCRIPTED=tactician`** or **`PLAYER_SCRIPTED=hustler`** instead to
-field one of the two built-in baselines. They also play *every* seat when no
-LLM credentials are available, which is what makes offline certification and
-the raw-Docker smoke complete.
+field one of the two built-in baselines. Prompt seats (`board-gauntlet-player`)
+require `COWORLD_LLM_ENDPOINT` (or provider credentials); local certification
+and raw-Docker smoke run `board-gauntlet-player` against `board-gauntlet-scripted`
+(`tactician`) using `COWORLD_LLM_ENDPOINT` backed by a local deterministic HTTP
+fixture (`coworld certify ... --use-llm`).
 
 For model training from complete local games, see
 [docs/training.md](docs/training.md).
